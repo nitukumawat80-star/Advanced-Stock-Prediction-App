@@ -6,7 +6,7 @@ import re
 import secrets
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -58,6 +58,72 @@ INDIAN_SECTOR_HINTS = {
     "SUNPHARMA.NS": "Pharma",
 }
 
+TOP_US_COMPANIES = {
+    "Apple": "AAPL",
+    "Microsoft": "MSFT",
+    "NVIDIA": "NVDA",
+    "Alphabet": "GOOGL",
+    "Amazon": "AMZN",
+    "Meta Platforms": "META",
+    "Tesla": "TSLA",
+    "JPMorgan Chase": "JPM",
+    "Walmart": "WMT",
+    "Netflix": "NFLX",
+}
+
+US_SECTOR_HINTS = {
+    "AAPL": "Technology",
+    "MSFT": "Technology",
+    "NVDA": "Technology",
+    "GOOGL": "Communication",
+    "AMZN": "Consumer",
+    "META": "Communication",
+    "TSLA": "Automobile",
+    "JPM": "Banking",
+    "WMT": "Retail",
+    "NFLX": "Media",
+}
+
+INDIAN_PLACE_HINTS = {
+    "RELIANCE.NS": "Mumbai, India",
+    "TCS.NS": "Mumbai, India",
+    "HDFCBANK.NS": "Mumbai, India",
+    "ICICIBANK.NS": "Mumbai, India",
+    "INFY.NS": "Bengaluru, India",
+    "BHARTIARTL.NS": "New Delhi, India",
+    "SBIN.NS": "Mumbai, India",
+    "LT.NS": "Mumbai, India",
+    "ITC.NS": "Kolkata, India",
+    "HINDUNILVR.NS": "Mumbai, India",
+    "KOTAKBANK.NS": "Mumbai, India",
+    "BAJFINANCE.NS": "Pune, India",
+    "AXISBANK.NS": "Mumbai, India",
+    "M&M.NS": "Mumbai, India",
+    "SUNPHARMA.NS": "Mumbai, India",
+}
+
+US_PLACE_HINTS = {
+    "AAPL": "Cupertino, USA",
+    "MSFT": "Redmond, USA",
+    "NVDA": "Santa Clara, USA",
+    "GOOGL": "Mountain View, USA",
+    "AMZN": "Seattle, USA",
+    "META": "Menlo Park, USA",
+    "TSLA": "Austin, USA",
+    "JPM": "New York, USA",
+    "WMT": "Bentonville, USA",
+    "NFLX": "Los Gatos, USA",
+}
+
+TIME_RANGE_DAYS = {
+    "1 Month": 30,
+    "3 Months": 90,
+    "6 Months": 180,
+    "1 Year": 365,
+    "2 Years": 730,
+    "5 Years": 1825,
+}
+
 FEATURE_COLUMNS = [
     "close",
     "return_1d",
@@ -69,6 +135,39 @@ FEATURE_COLUMNS = [
     "volatility_20",
     "volume_change",
 ]
+
+
+def build_company_directory() -> List[Dict[str, str]]:
+    companies: List[Dict[str, str]] = []
+    for name, ticker in TOP_INDIAN_COMPANIES.items():
+        companies.append(
+            {
+                "name": name,
+                "ticker": ticker,
+                "place": "India",
+                "market": "NSE",
+                "sector": INDIAN_SECTOR_HINTS.get(ticker, "Unknown"),
+                "location": INDIAN_PLACE_HINTS.get(ticker, "India"),
+            }
+        )
+
+    for name, ticker in TOP_US_COMPANIES.items():
+        companies.append(
+            {
+                "name": name,
+                "ticker": ticker,
+                "place": "USA",
+                "market": "NASDAQ/NYSE",
+                "sector": US_SECTOR_HINTS.get(ticker, "Unknown"),
+                "location": US_PLACE_HINTS.get(ticker, "USA"),
+            }
+        )
+    return companies
+
+
+COMPANY_DIRECTORY = build_company_directory()
+COMPANY_BY_TICKER = {item["ticker"]: item for item in COMPANY_DIRECTORY}
+COMPANY_BY_NAME = {item["name"].lower(): item for item in COMPANY_DIRECTORY}
 
 
 @dataclass
@@ -106,19 +205,44 @@ def password_digest(password: str, salt: str) -> str:
     return hashlib.sha256(f"{salt}:{password}".encode("utf-8")).hexdigest()
 
 
-def register_user(username: str, password: str) -> Tuple[bool, str]:
+def is_valid_email(email: str) -> bool:
+    pattern = r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$"
+    return bool(re.fullmatch(pattern, email))
+
+
+def register_user(
+    username: str,
+    password: str,
+    full_name: str,
+    email: str,
+    place: str,
+) -> Tuple[bool, str]:
+    full_name = full_name.strip()
+    email = email.strip().lower()
+    place = place.strip() or "Unknown"
+
     if not re.fullmatch(r"[A-Za-z0-9_]{3,30}", username):
         return False, "Username must be 3-30 chars using letters, numbers, or underscore."
+    if len(full_name) < 3:
+        return False, "Full name must have at least 3 characters."
+    if not is_valid_email(email):
+        return False, "Please enter a valid email address."
     if len(password) < 6:
         return False, "Password must have at least 6 characters."
 
     users = read_json_file(USERS_FILE)
     if username in users:
         return False, "Username already exists."
+    existing_emails = {str(user.get("email", "")).lower() for user in users.values()}
+    if email in existing_emails:
+        return False, "An account already exists with this email."
 
     salt = secrets.token_hex(16)
     hashed = password_digest(password, salt)
     users[username] = {
+        "full_name": full_name,
+        "email": email,
+        "place": place,
         "password_hash": f"{salt}${hashed}",
         "created_at": dt.datetime.utcnow().isoformat(),
     }
@@ -195,6 +319,73 @@ def normalize_ticker(raw_ticker: str, market: str) -> str:
     if market == "India (NSE)" and "." not in ticker and not ticker.startswith("^"):
         ticker = f"{ticker}.NS"
     return ticker
+
+
+def normalize_text(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
+
+
+def find_company_suggestions(query: str, place: str, sector: str, limit: int = 10) -> List[Dict[str, str]]:
+    query_text = normalize_text(query)
+    matches: List[Tuple[int, Dict[str, str]]] = []
+
+    for company in COMPANY_DIRECTORY:
+        if place != "All" and company["place"] != place:
+            continue
+        if sector != "All" and company["sector"] != sector:
+            continue
+
+        if not query_text:
+            score = 0
+            matches.append((score, company))
+            continue
+
+        searchable = normalize_text(
+            f"{company['name']} {company['ticker']} {company['sector']} {company['location']}"
+        )
+        score = 0
+        if query_text in normalize_text(company["name"]):
+            score += 5
+        if query_text in company["ticker"].lower():
+            score += 4
+        if query_text in normalize_text(company["sector"]):
+            score += 2
+        if query_text in searchable:
+            score += 1
+
+        if score > 0:
+            matches.append((score, company))
+
+    ranked = [item for _, item in sorted(matches, key=lambda x: (-x[0], x[1]["name"]))]
+    return ranked[:limit]
+
+
+def sector_options_for_place(place: str) -> List[str]:
+    sectors = set()
+    for company in COMPANY_DIRECTORY:
+        if place == "All" or company["place"] == place:
+            sectors.add(company["sector"])
+    return ["All"] + sorted(sectors)
+
+
+def company_from_chat_prompt(prompt: str) -> Optional[Dict[str, str]]:
+    lowered = prompt.lower()
+
+    for name_key, company in COMPANY_BY_NAME.items():
+        if name_key in lowered:
+            return company
+
+    ticker_candidates = re.findall(r"\b[A-Z]{2,12}(?:\.NS)?\b", prompt.upper())
+    for candidate in ticker_candidates:
+        if candidate in COMPANY_BY_TICKER:
+            return COMPANY_BY_TICKER[candidate]
+
+        if "." not in candidate:
+            possible_india = f"{candidate}.NS"
+            if possible_india in COMPANY_BY_TICKER:
+                return COMPANY_BY_TICKER[possible_india]
+
+    return None
 
 
 @st.cache_data(show_spinner=False)
@@ -413,57 +604,207 @@ def dependency_metrics(source_returns: pd.Series, target_returns: pd.Series) -> 
     }
 
 
+def apply_global_styles() -> None:
+    st.markdown(
+        """
+        <style>
+        @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Manrope:wght@400;600;700&display=swap');
+
+        html, body, [class*="css"] {
+            font-family: "Manrope", sans-serif;
+        }
+        h1, h2, h3, h4 {
+            font-family: "Space Grotesk", sans-serif;
+            letter-spacing: -0.02em;
+        }
+
+        .stApp {
+            background:
+                radial-gradient(1200px 600px at -10% -20%, #e8f8f1 10%, transparent 55%),
+                radial-gradient(1000px 500px at 110% -10%, #e5edf9 10%, transparent 50%),
+                linear-gradient(180deg, #f4f8fb 0%, #eef3f7 100%);
+        }
+
+        .panel {
+            border-radius: 18px;
+            padding: 18px 20px;
+            background: rgba(255, 255, 255, 0.85);
+            border: 1px solid rgba(15, 23, 42, 0.08);
+            box-shadow: 0 12px 30px rgba(15, 23, 42, 0.06);
+        }
+
+        .hero-chip {
+            display: inline-block;
+            margin-right: 8px;
+            margin-top: 6px;
+            padding: 5px 10px;
+            border-radius: 999px;
+            border: 1px solid #b6d4c3;
+            background: #ecf8f1;
+            color: #0f5132;
+            font-size: 0.78rem;
+            font-weight: 600;
+        }
+
+        .soft-note {
+            color: #475569;
+            font-size: 0.92rem;
+        }
+
+        .block-title {
+            font-size: 1.1rem;
+            font-weight: 700;
+            margin-bottom: 0.3rem;
+            color: #111827;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def setup_session_state() -> None:
     st.session_state.setdefault("logged_in", False)
     st.session_state.setdefault("username", "")
     st.session_state.setdefault("chat_history", [])
+    st.session_state.setdefault("dashboard_ticker", "RELIANCE.NS")
 
 
 def render_auth_screen() -> None:
     if st.session_state["logged_in"]:
         return
 
-    st.title("Stock Prediction and Analysis Platform")
-    st.caption("Login to access personalized predictions, recent searches, and assistant tools.")
-    login_tab, register_tab = st.tabs(["Login", "Register"])
+    left, right = st.columns([1.15, 1], gap="large")
 
-    with login_tab:
-        with st.form("login_form", clear_on_submit=False):
-            username = st.text_input("Username")
-            password = st.text_input("Password", type="password")
-            submit_login = st.form_submit_button("Login", use_container_width=True)
-        if submit_login:
-            if authenticate_user(username.strip(), password):
-                st.session_state["logged_in"] = True
-                st.session_state["username"] = username.strip()
-                st.success("Login successful.")
-                st.rerun()
-            else:
-                st.error("Invalid username or password.")
+    with left:
+        st.markdown(
+            """
+            <div class="panel">
+                <div style="font-size:2.15rem;font-weight:700;line-height:1.1;color:#111827;">
+                    Welcome Back to<br>TradeSphere
+                </div>
+                <div class="soft-note" style="margin-top:8px;">
+                    Sign in to continue with your personalized dashboard, market insights, and smart stock assistant.
+                </div>
+                <div style="margin-top:10px;">
+                    <span class="hero-chip">Real-time Insights</span>
+                    <span class="hero-chip">Smart Predictions</span>
+                    <span class="hero-chip">India + USA</span>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
-    with register_tab:
-        with st.form("register_form", clear_on_submit=True):
-            username = st.text_input("New username")
-            password = st.text_input("New password", type="password")
-            submit_register = st.form_submit_button("Create account", use_container_width=True)
-        if submit_register:
-            ok, message = register_user(username.strip(), password)
-            if ok:
-                st.success(message)
-            else:
-                st.error(message)
+        login_tab, register_tab = st.tabs(["Login", "Register"])
+
+        with login_tab:
+            with st.form("login_form", clear_on_submit=False):
+                username = st.text_input("Username", placeholder="Enter username")
+                password = st.text_input("Password", type="password", placeholder="Enter password")
+                submit_login = st.form_submit_button("Login", use_container_width=True)
+            if submit_login:
+                if authenticate_user(username.strip(), password):
+                    st.session_state["logged_in"] = True
+                    st.session_state["username"] = username.strip()
+                    st.success("Login successful.")
+                    st.rerun()
+                else:
+                    st.error("Invalid username or password.")
+            st.caption("New user? Open Register tab and create your account.")
+
+        with register_tab:
+            with st.form("register_form", clear_on_submit=True):
+                st.markdown("#### Create New Registration")
+                full_name = st.text_input("Full name", placeholder="Enter your full name")
+                email = st.text_input("Email", placeholder="example@gmail.com")
+                username = st.text_input("New username", placeholder="Choose username")
+                reg_col1, reg_col2 = st.columns(2)
+                with reg_col1:
+                    password = st.text_input("New password", type="password", placeholder="Minimum 6 characters")
+                with reg_col2:
+                    confirm_password = st.text_input("Confirm password", type="password", placeholder="Re-enter password")
+                place = st.selectbox("Place", ["India", "USA", "Other"])
+                agree_terms = st.checkbox("I agree to create account with these details.")
+                submit_register = st.form_submit_button("Create account", use_container_width=True)
+            if submit_register:
+                if password != confirm_password:
+                    st.error("Password and confirm password do not match.")
+                elif not agree_terms:
+                    st.error("Please accept the details checkbox to continue.")
+                else:
+                    ok, message = register_user(
+                        username=username.strip(),
+                        password=password,
+                        full_name=full_name,
+                        email=email,
+                        place=place,
+                    )
+                    if ok:
+                        st.success(message)
+                    else:
+                        st.error(message)
+
+    with right:
+        st.markdown(
+            """
+            <div style="
+                min-height:590px;
+                border-radius:22px;
+                padding:28px;
+                color:#f8fafc;
+                background:
+                    linear-gradient(160deg, rgba(15,23,42,0.85) 0%, rgba(16,48,73,0.78) 45%, rgba(6,95,70,0.72) 100%),
+                    radial-gradient(1300px 600px at 90% 0%, rgba(163,230,53,0.28), transparent 70%);
+                border:1px solid rgba(255,255,255,0.22);
+                box-shadow: 0 20px 40px rgba(2,6,23,0.22);">
+                <div style="font-size:0.8rem;letter-spacing:0.08em;text-transform:uppercase;opacity:0.9;">Market Snapshot</div>
+                <div style="font-size:2.1rem;font-weight:700;margin-top:8px;">Invest with Clarity</div>
+                <div style="margin-top:8px;font-size:0.95rem;opacity:0.9;line-height:1.45;">
+                    Modern stock interface with company suggestions by name, place, and time window.
+                    Track trends, analyze dependencies, and chat with your market assistant.
+                </div>
+                <div style="margin-top:22px;display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+                    <div style="background:rgba(255,255,255,0.1);border-radius:12px;padding:12px;">
+                        <div style="font-size:0.75rem;opacity:0.85;">Coverage</div>
+                        <div style="font-size:1.2rem;font-weight:700;">India + USA</div>
+                    </div>
+                    <div style="background:rgba(255,255,255,0.1);border-radius:12px;padding:12px;">
+                        <div style="font-size:0.75rem;opacity:0.85;">Modes</div>
+                        <div style="font-size:1.2rem;font-weight:700;">Search + Predict</div>
+                    </div>
+                    <div style="background:rgba(255,255,255,0.1);border-radius:12px;padding:12px;">
+                        <div style="font-size:0.75rem;opacity:0.85;">Analytics</div>
+                        <div style="font-size:1.2rem;font-weight:700;">Correlation</div>
+                    </div>
+                    <div style="background:rgba(255,255,255,0.1);border-radius:12px;padding:12px;">
+                        <div style="font-size:0.75rem;opacity:0.85;">Assistant</div>
+                        <div style="font-size:1.2rem;font-weight:700;">Improved Bot</div>
+                    </div>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
     st.stop()
 
 
 def render_sidebar(username: str) -> str:
     with st.sidebar:
-        st.header(f"Welcome, {username}")
-        st.caption("Personalized stock workspace")
+        st.markdown(
+            f"""
+            <div class="panel" style="padding:14px 14px 10px 14px;">
+                <div style="font-size:1.1rem;font-weight:700;color:#0f172a;">Hello, {username}</div>
+                <div class="soft-note">TradeSphere workspace</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
         page = st.radio(
             "Navigate",
             [
-                "Prediction",
+                "Dashboard",
                 "Top Indian Shares",
                 "Connections and Dependency",
                 "Recent Searches",
@@ -479,27 +820,132 @@ def render_sidebar(username: str) -> str:
 
 
 def render_prediction_page(username: str) -> None:
-    st.header("Prediction Engine")
-    st.caption("Train model on historical data, estimate future close price, and track your searches.")
+    st.header("Trading Dashboard")
+    st.caption("Premium stock workspace with company suggestions by name, place, and time window.")
 
-    user_watchlist = get_watchlist(username)
-    default_ticker = user_watchlist[0] if user_watchlist else "AAPL"
+    now_local = dt.datetime.now().strftime("%d %b %Y, %I:%M %p")
+    st.markdown(
+        f"""
+        <div class="panel" style="background:linear-gradient(120deg,#eef8ff 0%,#effcf4 100%);">
+            <div class="block-title">Market Control Center</div>
+            <div class="soft-note">Live session time: <b>{now_local}</b> | User: <b>{username}</b></div>
+            <div style="margin-top:8px;">
+                <span class="hero-chip">Name Search</span>
+                <span class="hero-chip">Place Filter</span>
+                <span class="hero-chip">Time Window</span>
+                <span class="hero-chip">AI Prediction</span>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        market = st.selectbox("Market", ["US / Global", "India (NSE)"])
-    with col2:
-        raw_ticker = st.text_input("Ticker symbol", value=default_ticker)
-    with col3:
+    if "ticker_input" not in st.session_state or not st.session_state["ticker_input"]:
+        st.session_state["ticker_input"] = st.session_state["dashboard_ticker"]
+    if "market_select" not in st.session_state:
+        st.session_state["market_select"] = (
+            "India (NSE)" if st.session_state["ticker_input"].endswith(".NS") else "US / Global"
+        )
+
+    top_snapshot = get_top_indian_snapshot()
+    metric_cols = st.columns(4)
+    with metric_cols[0]:
+        st.metric("Tracked Companies", str(len(COMPANY_DIRECTORY)))
+    with metric_cols[1]:
+        st.metric("Indian Universe", str(len(TOP_INDIAN_COMPANIES)))
+    with metric_cols[2]:
+        st.metric("US Universe", str(len(TOP_US_COMPANIES)))
+    with metric_cols[3]:
+        if not top_snapshot.empty:
+            st.metric("Top India Momentum", f"{top_snapshot.iloc[0]['Ticker']} ({top_snapshot.iloc[0]['1M Return %']:+.2f}%)")
+        else:
+            st.metric("Top India Momentum", "Unavailable")
+
+    st.markdown("### Company Search and Suggestions")
+    finder_col1, finder_col2, finder_col3 = st.columns([1, 1, 1.4])
+    with finder_col1:
+        place_filter = st.selectbox("Place", ["All", "India", "USA"])
+    with finder_col2:
+        sector_filter = st.selectbox("Sector", sector_options_for_place(place_filter))
+    with finder_col3:
+        search_query = st.text_input(
+            "Search by company name or ticker",
+            value="",
+            placeholder="Ex: Reliance, HDFC, Apple, Tesla",
+        )
+
+    time_choice = st.select_slider("Time Window", options=list(TIME_RANGE_DAYS.keys()), value="6 Months")
+    suggestions = find_company_suggestions(search_query, place_filter, sector_filter, limit=12)
+
+    selected_company = None
+    if suggestions:
+        labels = [
+            f"{item['name']} ({item['ticker']}) | {item['sector']} | {item['location']}" for item in suggestions
+        ]
+        label_to_company = {label: item for label, item in zip(labels, suggestions)}
+        selected_label = st.selectbox("Suggested companies", options=labels)
+        selected_company = label_to_company[selected_label]
+
+        pick_col, preview_col = st.columns([1, 4])
+        with pick_col:
+            if st.button("Use Selection", use_container_width=True):
+                st.session_state["dashboard_ticker"] = selected_company["ticker"]
+                st.session_state["ticker_input"] = selected_company["ticker"]
+                st.session_state["market_select"] = (
+                    "India (NSE)" if selected_company["place"] == "India" else "US / Global"
+                )
+                st.rerun()
+        with preview_col:
+            st.markdown(
+                f"<div class='soft-note'>Selected: <b>{selected_company['name']}</b> | "
+                f"Ticker: <b>{selected_company['ticker']}</b> | Place: <b>{selected_company['place']}</b></div>",
+                unsafe_allow_html=True,
+            )
+    else:
+        st.info("No company match found. Try broad search text like bank, tech, india, apple, or reliance.")
+
+    if suggestions:
+        suggestion_df = pd.DataFrame(suggestions).rename(
+            columns={
+                "name": "Company",
+                "ticker": "Ticker",
+                "place": "Place",
+                "market": "Market",
+                "sector": "Sector",
+                "location": "Head Office",
+            }
+        )
+        st.dataframe(suggestion_df, use_container_width=True, hide_index=True)
+
+    if selected_company:
+        days = TIME_RANGE_DAYS[time_choice]
+        end_preview = dt.date.today() + dt.timedelta(days=1)
+        start_preview = end_preview - dt.timedelta(days=days)
+        try:
+            preview_data = download_data(selected_company["ticker"], start_preview, end_preview)
+            st.subheader(f"{selected_company['ticker']} Price Trend ({time_choice})")
+            st.line_chart(preview_data[["close"]].rename(columns={"close": "Close"}))
+        except Exception:
+            st.warning("Preview trend unavailable for selected company.")
+
+    st.markdown("---")
+    st.markdown("### Prediction Studio")
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        market = st.selectbox("Market", ["US / Global", "India (NSE)"], key="market_select")
+    with c2:
+        raw_ticker = st.text_input("Ticker symbol", key="ticker_input", placeholder="AAPL or RELIANCE.NS")
+    with c3:
         horizon_days = st.slider("Prediction horizon (days)", min_value=1, max_value=30, value=7)
 
     history_years = st.slider("Years of history", min_value=1, max_value=10, value=5)
     run_prediction = st.button("Run prediction", type="primary")
 
-    with st.expander("Watchlist", expanded=False):
+    with st.expander("Watchlist Manager", expanded=False):
         add_watch_col, remove_watch_col = st.columns(2)
         with add_watch_col:
-            new_watch = st.text_input("Add ticker to watchlist", value="")
+            new_watch = st.text_input("Add ticker", value="")
             if st.button("Add to watchlist"):
                 ticker_to_add = normalize_ticker(new_watch, market)
                 if ticker_to_add:
@@ -518,7 +964,7 @@ def render_prediction_page(username: str) -> None:
                 st.info("Your watchlist is empty.")
 
     if not run_prediction:
-        st.info("Choose your settings and click Run prediction.")
+        st.info("Select company settings and click Run prediction.")
         return
 
     ticker = normalize_ticker(raw_ticker, market)
@@ -606,7 +1052,7 @@ def render_recent_searches_page(username: str) -> None:
     st.subheader("Watchlist Snapshot")
     watchlist = get_watchlist(username)
     if not watchlist:
-        st.info("Add tickers to watchlist from the Prediction page.")
+        st.info("Add tickers to watchlist from the Dashboard page.")
         return
 
     snapshot_rows: List[Dict] = []
@@ -759,59 +1205,156 @@ def render_connections_page() -> None:
 def chatbot_reply(prompt: str, username: str) -> str:
     text = prompt.strip()
     lowered = text.lower()
-
     if not text:
         return "Please type a question."
-    if any(word in lowered for word in ("hi", "hello", "hey")):
-        return "Hello. Ask me about top Indian shares, recent searches, or a ticker like RELIANCE.NS."
+
+    if any(word in lowered for word in ("hi", "hello", "hey", "namaste")):
+        return (
+            "Hello. I can suggest companies by name/place/time, fetch ticker snapshot, "
+            "and guide dependency analysis."
+        )
+
     if "help" in lowered:
         return (
-            "Try asking: 'top indian shares', 'recent searches', "
-            "'price of TCS.NS', or 'how to analyze dependency'."
+            "Try: 'suggest companies in india', 'search apple usa 6 months', "
+            "'price of reliance', 'recent searches', or 'top indian shares'."
         )
-    if "top" in lowered and "indian" in lowered:
-        symbols = ", ".join(list(TOP_INDIAN_COMPANIES.values())[:8])
-        return f"Popular Indian tickers: {symbols}."
+
+    if "time" in lowered and "market" in lowered:
+        return f"Current local session time is {dt.datetime.now().strftime('%d %b %Y, %I:%M %p')}."
+
     if "recent" in lowered:
         recent = get_search_history(username)
         if not recent:
             return "No recent searches found yet."
-        previews = [f"{item['ticker']} ({item['expected_move_pct']}%)" for item in recent[:5]]
+        previews = [f"{item['ticker']} ({item['expected_move_pct']:+.2f}%)" for item in recent[:5]]
         return "Recent predictions: " + ", ".join(previews)
+
+    if "top" in lowered and "indian" in lowered:
+        top_df = get_top_indian_snapshot()
+        if top_df.empty:
+            return "Top Indian shares are currently unavailable."
+        top_rows = top_df.head(5)
+        brief = ", ".join([f"{row['Ticker']} ({row['1M Return %']:+.2f}%)" for _, row in top_rows.iterrows()])
+        return "Top Indian momentum stocks: " + brief
+
     if "dependency" in lowered or "connection" in lowered:
         return (
-            "Open the 'Connections and Dependency' page, choose at least two shares, "
-            "then use the dependency section for beta, correlation, and R2."
+            "Open 'Connections and Dependency' page and select two shares. "
+            "You will get beta, correlation, R2, and relation strength."
         )
 
-    ticker_candidates = re.findall(r"\b[A-Z]{2,12}(?:\.NS)?\b", text.upper())
-    if ticker_candidates:
-        ticker = ticker_candidates[0]
-        if "." not in ticker and ticker in [item.split(".")[0] for item in TOP_INDIAN_COMPANIES.values()]:
-            ticker = f"{ticker}.NS"
+    place = "All"
+    if any(word in lowered for word in ("india", "indian", "nse", "mumbai")):
+        place = "India"
+    elif any(word in lowered for word in ("usa", "us", "america", "nasdaq", "nyse")):
+        place = "USA"
+
+    time_label = "6 Months"
+    if "1 month" in lowered or "1m" in lowered:
+        time_label = "1 Month"
+    elif "3 month" in lowered or "3m" in lowered:
+        time_label = "3 Months"
+    elif "1 year" in lowered or "12 month" in lowered:
+        time_label = "1 Year"
+    elif "2 year" in lowered:
+        time_label = "2 Years"
+    elif "5 year" in lowered:
+        time_label = "5 Years"
+
+    if "suggest" in lowered or "search" in lowered or "company" in lowered:
+        cleaned = re.sub(
+            r"\b(suggest|search|company|companies|stock|stocks|in|from|for|with|time|place|name|india|indian|usa|us|america|nse|nyse|nasdaq|month|months|year|years|1m|3m|6m)\b",
+            " ",
+            lowered,
+        )
+        query = re.sub(r"\s+", " ", cleaned).strip()
+        suggestions = find_company_suggestions(query, place, "All", limit=5)
+        if not suggestions:
+            return "No matching company found. Try keyword like bank, tech, reliance, apple, hdfc, tesla."
+
+        line_items = []
+        for item in suggestions:
+            line_items.append(f"{item['name']} ({item['ticker']}) - {item['place']} - {item['sector']}")
+
+        top_pick = suggestions[0]
+        try:
+            snap = get_quick_ticker_snapshot(top_pick["ticker"])
+            snapshot_text = (
+                f"Top match {top_pick['ticker']} latest {snap['latest']:.2f}, "
+                f"1D {snap['day_change_pct']:+.2f}%, 1M {snap['month_change_pct']:+.2f}%."
+            )
+        except Exception:
+            snapshot_text = f"Top match: {top_pick['ticker']} (snapshot unavailable right now)."
+
+        return (
+            f"Suggestions ({place}, {time_label}): " + " | ".join(line_items) + ". " + snapshot_text
+        )
+
+    matched_company = company_from_chat_prompt(text)
+    if matched_company:
+        ticker = matched_company["ticker"]
         try:
             snap = get_quick_ticker_snapshot(ticker)
             return (
-                f"{ticker} latest close: {snap['latest']:.2f}. "
-                f"1D: {snap['day_change_pct']:+.2f}%, 1M: {snap['month_change_pct']:+.2f}%."
+                f"{matched_company['name']} ({ticker}) in {matched_company['location']}: "
+                f"Latest {snap['latest']:.2f}, 1D {snap['day_change_pct']:+.2f}%, "
+                f"1M {snap['month_change_pct']:+.2f}%."
             )
         except Exception:
-            return f"I could not fetch data for {ticker}. Check the ticker symbol."
+            return f"I found {ticker}, but could not fetch its latest snapshot right now."
 
-    return "I can help with ticker snapshots, top Indian shares, recent searches, and dependency guidance."
+    return (
+        "I can help with company suggestions by place/time, ticker snapshot, top Indian shares, "
+        "and recent searches. Type 'help' for examples."
+    )
 
 
 def render_assistant_page(username: str) -> None:
     st.header("Stock Chatbot Assistant")
-    st.caption("Ask quick questions about tickers, top Indian shares, and your recent app activity.")
+    st.caption("Ask with normal language: name + place + time. Example: 'search bank india 1 year'.")
+
+    st.markdown(
+        """
+        <div class="panel">
+            <div class="block-title">Quick Prompts</div>
+            <div class="soft-note">Use one-click prompts if you do not want to type.</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    quick_cols = st.columns(4)
+    quick_prompt = ""
+    with quick_cols[0]:
+        if st.button("Suggest India", use_container_width=True):
+            quick_prompt = "suggest companies in india"
+    with quick_cols[1]:
+        if st.button("Suggest USA", use_container_width=True):
+            quick_prompt = "suggest companies in usa"
+    with quick_cols[2]:
+        if st.button("Top Indian Shares", use_container_width=True):
+            quick_prompt = "top indian shares"
+    with quick_cols[3]:
+        if st.button("Recent Searches", use_container_width=True):
+            quick_prompt = "recent searches"
+
+    util_cols = st.columns(2)
+    with util_cols[0]:
+        if st.button("Market Time", use_container_width=True):
+            quick_prompt = "market time"
+    with util_cols[1]:
+        if st.button("Clear Chat", use_container_width=True):
+            st.session_state["chat_history"] = []
+            st.rerun()
 
     if not st.session_state["chat_history"]:
         st.session_state["chat_history"].append(
             {
                 "role": "assistant",
                 "content": (
-                    "Hello. I am your stock assistant. Ask me about a ticker or type "
-                    "'top indian shares' or 'recent searches'."
+                    "Hello. I am your stock assistant. Ask by company name, place, and time window. "
+                    "Example: search tech usa 6 months."
                 ),
             }
         )
@@ -820,15 +1363,16 @@ def render_assistant_page(username: str) -> None:
         with st.chat_message(message["role"]):
             st.write(message["content"])
 
-    user_prompt = st.chat_input("Type your message")
-    if not user_prompt:
+    typed_prompt = st.chat_input("Type your message")
+    active_prompt = typed_prompt if typed_prompt else quick_prompt
+    if not active_prompt:
         return
 
-    st.session_state["chat_history"].append({"role": "user", "content": user_prompt})
+    st.session_state["chat_history"].append({"role": "user", "content": active_prompt})
     with st.chat_message("user"):
-        st.write(user_prompt)
+        st.write(active_prompt)
 
-    answer = chatbot_reply(user_prompt, username)
+    answer = chatbot_reply(active_prompt, username)
     st.session_state["chat_history"].append({"role": "assistant", "content": answer})
     with st.chat_message("assistant"):
         st.write(answer)
@@ -838,6 +1382,7 @@ def main() -> None:
     st.set_page_config(page_title="Advanced Stock Prediction App", layout="wide")
     ensure_storage_files()
     setup_session_state()
+    apply_global_styles()
     render_auth_screen()
 
     st.title("Advanced Stock Prediction App")
@@ -846,7 +1391,7 @@ def main() -> None:
     username = st.session_state["username"]
     page = render_sidebar(username)
 
-    if page == "Prediction":
+    if page == "Dashboard":
         render_prediction_page(username)
     elif page == "Top Indian Shares":
         render_top_indian_page()
