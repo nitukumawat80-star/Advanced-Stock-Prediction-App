@@ -1382,7 +1382,7 @@ def main() -> None:
     st.set_page_config(page_title="Advanced Stock Prediction App", layout="wide")
     st.markdown(
         """
-        <meta name="google-site-verification" content="IX9qC5KkhZbTPV7VguZWx8QlqxMgpS2owvBkpEAG_Zc" />
+        <meta name="google-site-verification" content="YiilAMAHuLmZv2H53lIGECPGNTrTFm-lgFNW7SahFLM" />
         """,
         unsafe_allow_html=True
     )
