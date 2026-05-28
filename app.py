@@ -1377,14 +1377,14 @@ def render_assistant_page(username: str) -> None:
     with st.chat_message("assistant"):
         st.write(answer)
 
-
+import streamlit.components.v1 as components
 def main() -> None:
     st.set_page_config(page_title="Advanced Stock Prediction App", layout="wide")
-    st.markdown(
+    components.html(
         """
         <meta name="google-site-verification" content="YiilAMAHuLmZv2H53lIGECPGNTrTFm-lgFNW7SahFLM" />
         """,
-        unsafe_allow_html=True
+        height=0,
     )
     ensure_storage_files()
     setup_session_state()
