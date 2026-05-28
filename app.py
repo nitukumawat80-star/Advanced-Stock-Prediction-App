@@ -1380,7 +1380,7 @@ def render_assistant_page(username: str) -> None:
 
 def main() -> None:
     st.set_page_config(page_title="Advanced Stock Prediction App", layout="wide")
-      st.markdown(
+    st.markdown(
         """
         <meta name="google-site-verification" content="IX9qC5KkhZbTPV7VguZWx8QlqxMgpS2owvBkpEAG_Zc" />
         """,
