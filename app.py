@@ -1380,6 +1380,12 @@ def render_assistant_page(username: str) -> None:
 
 def main() -> None:
     st.set_page_config(page_title="Advanced Stock Prediction App", layout="wide")
+      st.markdown(
+        """
+        <meta name="google-site-verification" content="IX9qC5KkhZbTPV7VguZWx8QlqxMgpS2owvBkpEAG_Zc" />
+        """,
+        unsafe_allow_html=True
+    )
     ensure_storage_files()
     setup_session_state()
     apply_global_styles()
